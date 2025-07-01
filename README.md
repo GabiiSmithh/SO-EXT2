@@ -1,8 +1,3 @@
-Com certeza\! Um bom `README.md` é a porta de entrada para qualquer projeto. Ele deve explicar o que o projeto faz, como configurá-lo e como usá-lo.
-
-Crie um arquivo chamado `README.md` no diretório raiz do seu projeto e cole o seguinte conteúdo. Ele está formatado em Markdown, que é o padrão para sites como GitHub, GitLab, etc.
-
------
 
 # nEXT2 Shell: Um Shell Interativo para Sistemas de Arquivos EXT2
 
