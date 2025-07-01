@@ -1,6 +1,14 @@
 #ifndef EXT2_SHELL_H
 #define EXT2_SHELL_H
 
+#ifndef EXT2_S_IFREG
+#define EXT2_S_IFREG 0x8000
+#endif
+
+#ifndef EXT2_S_IFDIR
+#define EXT2_S_IFDIR 0x4000
+#endif
+
 #include <string>
 #include <vector>
 #include <functional>
