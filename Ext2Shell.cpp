@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iomanip>
 #include <fstream>
+#include <algorithm>
 
 // Construtor: Abre a imagem e inicializa o estado
 Ext2Shell::Ext2Shell(const std::string& imagePath) : imagePath(imagePath), fd(-1) {
@@ -483,7 +484,89 @@ void Ext2Shell::cmd_attr(const std::string& name) {
     std::cout << "cmd_attr ainda não implementado." << std::endl;
 }
 void Ext2Shell::cmd_cat(const std::string& name) {
-    std::cout << "cmd_cat ainda não implementado." << std::endl;
+    // Verifica se o arquivo existe
+    unsigned int inodeNum = getInodeByName(name);
+    if (inodeNum == 0) {
+        std::cerr << "Error: File '" << name << "' not found." << std::endl;
+        return;
+    }
+
+    ext2_inode fileInode;
+    readInode(inodeNum, &fileInode);
+
+    // Verifica se é um arquivo regular
+    if (!S_ISREG(fileInode.i_mode)) {
+        std::cerr << "Error: '" << name << "' is not a regular file." << std::endl;
+        return;
+    }
+
+    // Lê os blocos do arquivo e imprime o conteúdo
+    std::vector<char> buffer(blockSize);
+    unsigned int bytesRead = 0;
+    const unsigned int fileSize = fileInode.i_size; // Tamanho do arquivo
+
+    // Lê os 12 blocos diretos do inode do arquivo
+    for (int i = 0; i < 12 && bytesRead < fileSize; i++) {
+        // Se o ponteiro do bloco for 0, não há mais blocos para ler
+        if (fileInode.i_block[i] == 0) break;
+
+        // Lê o bloco do arquivo de origem pro buffer
+        readBlock(fileInode.i_block[i], buffer.data());
+
+        unsigned int bytesToWrite = std::min((unsigned int)blockSize,fileSize - bytesRead); // Calcula quantos bytes escrever neste bloco
+
+        // Imprime o conteúdo do bloco lido
+        std::cout.write(buffer.data(), bytesToWrite);
+        bytesRead += bytesToWrite;
+    }
+
+    // Bloco indireto simples (12º bloco)
+    if (bytesRead < fileSize && fileInode.i_block[12] != 0) {
+        std::vector<unsigned int> indirectBlockPointers(blockSize / sizeof(unsigned int));
+        readBlock(fileInode.i_block[12], indirectBlockPointers.data());
+
+        // Percorre os ponteiros do bloco indireto
+        for (unsigned int dataBlockNum : indirectBlockPointers) {
+            if (dataBlockNum == 0) break; // Se o ponteiro for 0, não há mais blocos
+
+            readBlock(dataBlockNum, buffer.data());
+            unsigned int bytesToWrite = std::min((unsigned int)blockSize, fileSize - bytesRead);
+            std::cout.write(buffer.data(), bytesToWrite);
+            bytesRead += bytesToWrite;
+        }
+    }
+
+    // Bloco indireto duplo (13º bloco)
+    if (bytesRead < fileSize && fileInode.i_block[13] !=0) {
+        std::vector<unsigned int> doubleIndirectBlockPointers(blockSize / sizeof(unsigned int));
+        readBlock(fileInode.i_block[13], doubleIndirectBlockPointers.data());
+
+        // Percorre os ponteiros do bloco indireto duplo
+        for (unsigned int indirectBlockNum : doubleIndirectBlockPointers) {
+            if (indirectBlockNum == 0) break; // Se o ponteiro for 0, não há mais blocos
+
+            std::vector<unsigned int> indirectDataBlockPointers(blockSize / sizeof(unsigned int));
+            readBlock(indirectBlockNum, indirectDataBlockPointers.data());
+
+            // Lê cada bloco apontado pelo bloco indireto duplo
+            for (unsigned int dataBlockNum : indirectDataBlockPointers) {
+                if (dataBlockNum == 0) break; // Se o ponteiro for 0, não há mais blocos
+
+                readBlock(dataBlockNum, buffer.data());
+                unsigned int bytesToWrite = std::min((unsigned int)blockSize, fileSize - bytesRead);
+                std::cout.write(buffer.data(), bytesToWrite);
+                bytesRead += bytesToWrite;
+            }
+        }
+    }
+
+    // Verifica se leu todo o arquivo
+    if (bytesRead < fileSize) {
+        std::cerr << "Error: Failed to read entire file '" << name << "'." << std::endl;
+    }
+
+    // Adiciona uma linha vazia ao final da saída
+    std::cout << std::endl;
 }
 
 void Ext2Shell::cmd_touch(const std::string& name) {
@@ -799,9 +882,106 @@ void Ext2Shell::cmd_rmdir(const std::string& name) {
     }
 }
 
+// Exemplo: cp file.txt /home/user/file_copy.txt (não utilizar aspas nem espaços no caminho do arquivo)
 void Ext2Shell::cmd_cp(const std::string& source, const std::string& dest) {
-    std::cout << "cmd_cp ainda não implementado." << std::endl;
+    // Verifica se o arquivo de origem existe
+    unsigned int sourceInodeNum = getInodeByName(source);
+    if (sourceInodeNum == 0) {
+        std::cerr << "Error: Source file '" << source << "' does not exist." << std::endl;
+        return;
+    }
+
+    // Lê o inode do arquivo de origem
+    ext2_inode sourceInode;
+    readInode(sourceInodeNum, &sourceInode);
+
+    // Verifica se é um arquivo regular
+    if (!S_ISREG(sourceInode.i_mode)) {
+        std::cerr << "Error: Source '" << source << "' is not a regular file." << std::endl;
+        return;
+    }
+
+    // Abre o fluxo de saída para o arquivo de destino
+    // Se o arquivo ja existe, vai ser sobrescrito
+    std::ofstream outFile(dest, std::ios::out | std::ios::binary);
+    if (!outFile.is_open()) { // Verifica se o arquivo de destino pode ser aberto (o arquivo foi criado com sucesso)
+        std::cerr << "Error: Could not open destination file '" << dest << "' for writing." << std::endl;
+        return;
+    }
+
+    // Buffer temporario para ler os blocos do arquivo
+    std::vector<char> buffer(blockSize);
+    unsigned int bytesCopied = 0;
+    const unsigned int fileSize = sourceInode.i_size; // Tamanho do arquivo de origem
+
+    // Percorre os 12 blocos diretos do inode do arquivo de origem
+    for (int i = 0; i < 12 && bytesCopied < fileSize; i++) {
+        // Se o ponteiro do bloco for 0, não há mais blocos para ler
+        if (sourceInode.i_block[i] == 0) break;
+
+        // Lê o bloco do arquivo de origem pro buffer
+        readBlock(sourceInode.i_block[i], buffer.data());
+
+        unsigned int bytesToWrite = std::min((unsigned int)blockSize,fileSize - bytesCopied); // Calcula quantos bytes escrever neste bloco
+
+        outFile.write(buffer.data(), bytesToWrite); // Escreve o bloco no arquivo de destino
+
+        // Atualiza o contador de bytes copiados
+        bytesCopied += bytesToWrite;
+    }
+
+    // Processa os blocos indiretos, se necessário (i_block[12] e i_block[13])
+    if (bytesCopied < fileSize && sourceInode.i_block[12] != 0) {
+        // Lê o bloco indireto
+        // O bloco indireto contém ponteiros para blocos de dados
+        std::vector<unsigned int> indirectBlockpointers(blockSize / sizeof(unsigned int));
+        readBlock(sourceInode.i_block[12], (char*)indirectBlockpointers.data());
+
+        //  Percorre os ponteiros do bloco indireto
+        for (unsigned int dataBlockNum : indirectBlockpointers) {
+            if (bytesCopied >= fileSize || dataBlockNum == 0) break; // Se já copiou todo o arquivo, sai do loop
+
+            // Lê o bloco de dados apontado pelo ponteiro indireto
+            readBlock(dataBlockNum, buffer.data());
+
+            unsigned int bytesToWrite = std::min((unsigned int)blockSize, fileSize - bytesCopied); // Calcula quantos bytes escrever neste bloco
+            outFile.write(buffer.data(), bytesToWrite); // Escreve o bloco no arquivo de destino
+            bytesCopied += bytesToWrite; // Atualiza o contador de bytes copiados
+        }
+    }
+
+    if (bytesCopied < fileSize && sourceInode.i_block[13] != 0) {
+        // Lê o bloco indireto duplo
+        std::vector<unsigned int> doubleIndirectBlockPointers(blockSize / sizeof(unsigned int));
+        readBlock(sourceInode.i_block[13], (char*)doubleIndirectBlockPointers.data());
+
+        // Percorre cada ponteiro para um bloco indireto
+        for (unsigned int singleIndirectBlockNum : doubleIndirectBlockPointers) {
+            if (bytesCopied >= fileSize || singleIndirectBlockNum == 0) break; // Se já copiou todo o arquivo, sai do loop
+
+            // Buffer para ler os blocos indiretos simples
+            std::vector<unsigned int> singleIndirectBlockPointers(blockSize / sizeof(unsigned int));
+            readBlock(singleIndirectBlockNum, (char*)singleIndirectBlockPointers.data());
+
+            // Percorre os ponteiros do bloco de dados indireto simples
+            for (unsigned int dataBlockNum : singleIndirectBlockPointers) {
+                if (bytesCopied >= fileSize || dataBlockNum == 0) break; // Se já copiou todo o arquivo, sai do loop
+
+                // Lê o bloco de dados apontado pelo ponteiro indireto simples
+                readBlock(dataBlockNum, buffer.data());
+
+                unsigned int bytesToWrite = std::min((unsigned int)blockSize, fileSize - bytesCopied); // Calcula quantos bytes escrever neste bloco
+                outFile.write(buffer.data(), bytesToWrite); // Escreve o bloco no arquivo de destino
+                bytesCopied += bytesToWrite; // Atualiza o contador de bytes copiados
+            }
+        }
+    }
+
+    outFile.close(); // Fecha o arquivo de destino
+
+    std::cout << "File '" << source << "' copied to '" << dest << "' successfully." << std::endl;
 }
+
 void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newName) {
     std::cout << "cmd_rename ainda não implementado." << std::endl;
 }
