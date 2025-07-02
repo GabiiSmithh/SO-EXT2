@@ -282,6 +282,42 @@ int Ext2Shell::addDirectoryEntry(unsigned int parentInodeNum, unsigned int child
     return -1;
 }
 
+// Remove apenas a Directory Entry sem liberar o inode
+void Ext2Shell::removeDirectoryEntry(unsigned int parentInodeNum, const std::string& name) {
+    ext2_inode parentInode;
+    readInode(parentInodeNum, &parentInode);
+
+    std::vector<char> blockData(blockSize);
+    for (int i = 0; i < 12; i++) {
+        if (parentInode.i_block[i] == 0)
+            continue;
+        readBlock(parentInode.i_block[i], blockData.data());
+
+        ext2_dir_entry_2* prev = nullptr;
+        unsigned int offset = 0;
+        while (offset < blockSize) {
+            auto* e = reinterpret_cast<ext2_dir_entry_2*>(&blockData[offset]);
+            if (e->inode == 0) 
+                break;
+
+            std::string entryName(e->name, e->name_len);
+            if (entryName == name) {
+                if (prev) {
+                    // junta rec_len
+                    prev->rec_len += e->rec_len;
+                } else {
+                    // se for primeiro, marca inode=0 (entry “vazia”)
+                    e->inode = 0;
+                }
+                writeBlock(parentInode.i_block[i], blockData.data());
+                return;
+            }
+            prev = e;
+            offset += e->rec_len;
+        }
+    }
+}
+
 // Verifica se um bit está marcado no bitmap
 bool Ext2Shell::isBitSet(unsigned char* bitmap, int bit) {
     int bytePos = bit / 8;
@@ -570,6 +606,11 @@ void Ext2Shell::cmd_cat(const std::string& name) {
 }
 
 void Ext2Shell::cmd_touch(const std::string& name) {
+    // Validar comprimento do nome
+    if (name.length() >= EXT2_NAME_LEN) {
+        std::cerr << "Error: Name too long (max " << EXT2_NAME_LEN - 1 << " characters)." << std::endl;        return;
+    }
+
     // Verifica se o arquivo já existe no diretório atual
     if (getInodeByName(name) != 0) {
         std::cerr << "Error: File '" << name << "' already exists." << std::endl;
@@ -983,5 +1024,41 @@ void Ext2Shell::cmd_cp(const std::string& source, const std::string& dest) {
 }
 
 void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newName) {
-    std::cout << "cmd_rename ainda não implementado." << std::endl;
+    // Valida comprimento
+    if (newName.length() >= EXT2_NAME_LEN) {
+        std::cerr << "Error: Name too long (max " << EXT2_NAME_LEN - 1 << " characters)." << std::endl;        return;
+    }
+
+    // Verifica se oldName existe
+    unsigned int oldIno = getInodeByName(oldName);
+    if (oldIno == 0) {
+         std::cerr << "Error: '" << oldName << "' not found." << std::endl;
+        return;
+    }
+
+    // Verifica se newName já existe
+    if (getInodeByName(newName) != 0) {
+        std::cerr << "Error: '" << newName << "' already exists." << std::endl;
+        return;
+    }
+
+    // 4) Determina o file_type (arquivo ou diretório)
+    ext2_inode targetInode;
+    readInode(oldIno, &targetInode);
+    unsigned char fileType = S_ISDIR(targetInode.i_mode) ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+
+    // Cria a nova entrada (link)
+    if (addDirectoryEntry(currentInodeNum, oldIno, newName, fileType) < 0) {
+        std::cerr << "Error: Insufficient space to create '" << newName << "'." << std::endl;
+        return;
+    }
+
+    // Remove a entrada antiga
+    removeDirectoryEntry(currentInodeNum, oldName);
+
+    // Atualiza o link count no inode (decrementa uma referência)
+    targetInode.i_links_count--;
+    writeInode(oldIno, &targetInode);
+
+    std::cout << "Renamed '" << oldName << "' to '" << newName << "' successfully." << std::endl;
 }
