@@ -502,6 +502,11 @@ void Ext2Shell::cmd_ls() {
     forEachDirEntry(currentInodeNum, [](ext2_dir_entry_2* entry) {
         std::string name(entry->name, entry->name_len);
         std::cout << name << std::endl;
+        std::cout << "inode: " << entry->inode << std::endl;
+        std::cout << "record lenght: " << entry->rec_len << std::endl;
+        std::cout << "name lenght: " << static_cast<int>(entry->name_len) << std::endl;
+        std::cout << "file type: " << static_cast<int>(entry->file_type) << std::endl;
+        std::cout << std::endl;
         return true;
     });
 }
