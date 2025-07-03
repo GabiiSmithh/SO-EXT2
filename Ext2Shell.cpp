@@ -127,16 +127,51 @@ std::string Ext2Shell::getPrompt() const {
     return "[" + pathStr + "]$> ";
 }
 
-void Ext2Shell::processCommand(const std::string& line) {
-    std::stringstream ss(line);
-    std::string command;
-    ss >> command;
+// Ler palavras que tem espaço com "" ou com '\'
+std::vector<std::string> Ext2Shell::tokenize(const std::string& input) {
+    std::vector<std::string> tokens;  // Vetor para armazenar os tokens extraídos
+    std::string current;              // Acumulador para o token atual
+    bool inQuotes = false;            // Flag para verificar se estamos dentro de aspas
+    bool escaping = false;            // Flag para verificar se o próximo caractere é escapado
 
-    std::vector<std::string> args;
-    std::string arg;
-    while (ss >> arg) {
-        args.push_back(arg);
+    for (char c : input) {
+        if (escaping) {
+            // Se o caractere anterior era '\', adiciona este como literal
+            current += c;
+            escaping = false; // Consome o escape
+        } else if (c == '\\') {
+            // Inicia escape — o próximo caractere será tratado literalmente
+            escaping = true;
+        } else if (c == '"') {
+            // Alterna o estado de 'inQuotes' ao encontrar aspas
+            inQuotes = !inQuotes;
+        } else if (std::isspace(static_cast<unsigned char>(c)) && !inQuotes) {
+            // Se for espaço e não estamos dentro de aspas, fecha o token atual
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+        } else {
+            // Adiciona caractere normalmente ao token atual
+            current += c;
+        }
     }
+
+    // Após o loop, adiciona o último token
+    if (!current.empty()) {
+        tokens.push_back(current);
+    }
+
+    return tokens;
+}
+
+
+void Ext2Shell::processCommand(const std::string& line) {
+    std::vector<std::string> tokens = tokenize(line);
+    if (tokens.empty()) return;
+
+    std::string command = tokens[0];
+    std::vector<std::string> args(tokens.begin() + 1, tokens.end());
 
     try {
         if (command == "info") cmd_info();

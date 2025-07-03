@@ -71,6 +71,7 @@ private:
     void forEachDirEntry(unsigned int dirInodeNum, std::function<bool(ext2_dir_entry_2*)> callback);
     int addDirectoryEntry(unsigned int parentInodeNum, unsigned int childInodeNum, const std::string& name, unsigned char fileType);
     void removeDirectoryEntry(unsigned int parentInodeNum, const std::string& name);
+    std::vector<std::string> tokenize(const std::string& input);
 
     // --- Implementação dos Comandos ---
     void cmd_info();
