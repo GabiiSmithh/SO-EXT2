@@ -52,7 +52,7 @@ Com os pré-requisitos instalados, basta clonar (ou ter os arquivos em um diret�
 Para iniciar o shell, execute o programa passando o caminho para a sua imagem de disco como argumento:
 
 ```bash
-./next2shell minha_imagem.img
+./next2shell myext2image.img
 ```
 
 ## 📦 Como Criar uma Imagem EXT2 para Testes
