@@ -12,10 +12,10 @@
 #include <algorithm>
 
 // Construtor: Abre a imagem e inicializa o estado
-Ext2Shell::Ext2Shell(const std::string& imagePath) : imagePath(imagePath), fd(-1) {
-    fd = open(imagePath.c_str(), O_RDWR);
+Ext2Shell::Ext2Shell(const std::string& imagePath) : fd(open(imagePath.c_str(), O_RDWR)), imagePath(imagePath) {
     if (fd < 0) {
-        throw std::runtime_error("Error: Could not open image file '" + imagePath + "'.");
+        // Usamos this->imagePath para ser explícito que estamos usando o membro da classe.
+        throw std::runtime_error("Error: Could not open image file '" + this->imagePath + "'.");
     }
     initialize();
 }
@@ -52,30 +52,36 @@ void Ext2Shell::updateCurrentDirectory(unsigned int inodeNum) {
 
 // --- Métodos de Baixo Nível ---
 
+// Calcula o deslocamento do bloco no disco
 inline unsigned int block_offset(unsigned int block, unsigned int blockSize) {
     return BASE_OFFSET + (block - 1) * blockSize;
 }
 
+// Lê blocos inteiros do disco
 void Ext2Shell::readBlock(unsigned int block, void* buffer) {
     lseek(fd, block_offset(block, blockSize), SEEK_SET);
     read(fd, buffer, blockSize);
 }
 
+// Escreve blocos inteiros no disco
 void Ext2Shell::writeBlock(unsigned int block, const void* buffer) {
     lseek(fd, block_offset(block, blockSize), SEEK_SET);
     write(fd, buffer, blockSize);
 }
 
+// Lê descritores de grupo
 void Ext2Shell::readGroupDesc(unsigned int groupNum, ext2_group_desc* group) {
     lseek(fd, BASE_OFFSET + blockSize + groupNum * sizeof(ext2_group_desc), SEEK_SET);
     read(fd, group, sizeof(ext2_group_desc));
 }
 
+// Escreve descritores de grupo
 void Ext2Shell::writeGroupDesc(unsigned int groupNum, const ext2_group_desc* group) {
     lseek(fd, BASE_OFFSET + blockSize + groupNum * sizeof(ext2_group_desc), SEEK_SET);
     write(fd, group, sizeof(struct ext2_group_desc));
 }
 
+// Lê um inode específico do disco
 void Ext2Shell::readInode(unsigned int inodeNum, ext2_inode* inode) {
     unsigned int group = (inodeNum - 1) / super.s_inodes_per_group;
     ext2_group_desc groupDesc;
@@ -87,6 +93,7 @@ void Ext2Shell::readInode(unsigned int inodeNum, ext2_inode* inode) {
     read(fd, inode, sizeof(ext2_inode));
 }
 
+// Escreve um inode específico no disco
 void Ext2Shell::writeInode(unsigned int inodeNum, const ext2_inode* inode) {
     unsigned int group = (inodeNum - 1) / super.s_inodes_per_group;
     ext2_group_desc groupDesc;
@@ -101,6 +108,7 @@ void Ext2Shell::writeInode(unsigned int inodeNum, const ext2_inode* inode) {
 
 // --- Lógica do Shell ---
 
+// Executa o loop principal do shell
 void Ext2Shell::run() {
     std::string line;
     std::cout << "nEXT2 Shell initialized. Type 'exit' to quit." << std::endl;
@@ -116,6 +124,7 @@ void Ext2Shell::run() {
     std::cout << "Exiting shell." << std::endl;
 }
 
+// Gera o prompt baseado no caminho atual
 std::string Ext2Shell::getPrompt() const {
     std::string pathStr = "/";
     for (const auto& part : currentPath) {
@@ -165,7 +174,7 @@ std::vector<std::string> Ext2Shell::tokenize(const std::string& input) {
     return tokens;
 }
 
-
+// Processa um comando lido do usuário
 void Ext2Shell::processCommand(const std::string& line) {
     std::vector<std::string> tokens = tokenize(line);
     if (tokens.empty()) return;
@@ -195,6 +204,7 @@ void Ext2Shell::processCommand(const std::string& line) {
 
 // --- Implementações dos Comandos ---
 
+// Exibe informações do sistema de arquivos
 void Ext2Shell::cmd_info() {
     std::cout << "Volume name.....: " << super.s_volume_name << std::endl;
     std::cout << "Image size......: " << (super.s_blocks_count * blockSize) / 1024 << " KiB" << std::endl;
@@ -241,6 +251,7 @@ unsigned int Ext2Shell::getInodeByName(const std::string& name) {
     return foundInode;
 }
 
+// Lê todos os blocos de dados de um inode e chama o callback para cada bloco
 void Ext2Shell::forEachDataBlock(unsigned int inodeNum, std::function<void(const std::vector<char>&)> callback) {
     ext2_inode inode;
     readInode(inodeNum, &inode);
@@ -359,6 +370,7 @@ bool Ext2Shell::isBitSet(unsigned char* bitmap, int bit) {
     int bitPos = bit % 8;
     return (bitmap[bytePos] & (1 << bitPos)) != 0;
 }
+
 // Procura um inode livre no bitmap do grupo atual e retorna o número do inode ou -1 se não achar
 int Ext2Shell::findFreeInode() {
     unsigned char bitmap[blockSize];
@@ -497,7 +509,7 @@ void Ext2Shell::freeBlock(unsigned int blockNum) {
     writeGroupDesc(currentGroupNum, &currentGroupDesc);
 }
 
-
+// Lista os arquivos e diretórios no diretório atual
 void Ext2Shell::cmd_ls() {
     forEachDirEntry(currentInodeNum, [](ext2_dir_entry_2* entry) {
         std::string name(entry->name, entry->name_len);
@@ -511,6 +523,7 @@ void Ext2Shell::cmd_ls() {
     });
 }
 
+// Muda o diretório atual para o especificado
 void Ext2Shell::cmd_cd(const std::string& path) {
     if (path == "..") {
         if (!currentPath.empty()) {
@@ -548,17 +561,19 @@ void Ext2Shell::cmd_cd(const std::string& path) {
     currentPath.push_back(path);
 }
 
+// Exibe o caminho atual
 void Ext2Shell::cmd_pwd() {
     std::cout << getPrompt() << std::endl;
 }
 
-// ... (Implementação dos outros comandos: cat, attr, touch, mkdir, etc.)
-// A implementação completa seria muito longa, mas a estrutura acima dá a base.
-// O segredo está em usar os métodos auxiliares (getInodeByName, forEachDataBlock, etc.)
-// para construir a lógica dos comandos de forma limpa.
+// --- Implementações dos Comandos de Manipulação de Arquivos e Diretórios ---
+
+// Exibe os atributos de um arquivo ou diretório
 void Ext2Shell::cmd_attr(const std::string& name) {
     std::cout << "cmd_attr ainda não implementado." << std::endl;
 }
+
+// Exibe o conteúdo de um arquivo
 void Ext2Shell::cmd_cat(const std::string& name) {
     // Verifica se o arquivo existe
     unsigned int inodeNum = getInodeByName(name);
@@ -645,6 +660,7 @@ void Ext2Shell::cmd_cat(const std::string& name) {
     std::cout << std::endl;
 }
 
+// Cria um novo arquivo vazio
 void Ext2Shell::cmd_touch(const std::string& name) {
     // Validar comprimento do nome
     if (name.length() >= EXT2_NAME_LEN) {
@@ -688,6 +704,7 @@ void Ext2Shell::cmd_touch(const std::string& name) {
     std::cout << "File '" << name << "' created successfully." << std::endl;
 }
 
+// Cria um novo diretório
 void Ext2Shell::cmd_mkdir(const std::string& name) {
     // Verifica se já existe arquivo ou diretório com o mesmo nome
     if (getInodeByName(name) != 0) {
@@ -763,16 +780,19 @@ void Ext2Shell::cmd_mkdir(const std::string& name) {
     std::cout << "Directory '" << name << "' created successfully." << std::endl;
 }
 
+// Remove um arquivo
 void Ext2Shell::cmd_rm(const std::string& name) {
+    unsigned int targetInodeNum = getInodeByName(name);
+    
     // Verifica se existe um arquivo ou diretório com o nome
-    if (getInodeByName(name) == 0) {
+    if (targetInodeNum == 0) {
         std::cerr << "Error: File or directory named '" << name << "' does not exist." << std::endl;
         return;
     }
 
     // Verifica se é um arquivo ou um diretório
     ext2_inode targetInode;
-    readInode(getInodeByName(name), &targetInode);
+    readInode(targetInodeNum, &targetInode);
 
     // Se for um diretório, não pode remover com rm
     if (S_ISDIR(targetInode.i_mode)) {
@@ -780,12 +800,12 @@ void Ext2Shell::cmd_rm(const std::string& name) {
         return;
     }
 
-    // Remove a entrada do diretório pai
-    ext2_dir_entry_2* prev_entry = nullptr;
     bool entryRemoved = false;
     // Percorre as entradas do diretório pai (currentInodeNum)
     for (int i = 0; i < 12 && !entryRemoved; i++) {
         if (currentInode.i_block[i] == 0) continue; // pula blocos vazios
+
+        ext2_dir_entry_2* prev_entry = nullptr; // Ponteiro para a entrada anterior
 
         // Lê o bloco do diretório
         std::vector<char> blockData(blockSize);
@@ -794,56 +814,90 @@ void Ext2Shell::cmd_rm(const std::string& name) {
         unsigned int offset = 0;
         while (offset < blockSize) {
             ext2_dir_entry_2* entry = (ext2_dir_entry_2*)&blockData[offset];
-            if (entry->inode == 0) { // Inode = 0, a entrada está vazia ou ja foi apagada
-                offset += entry->rec_len; // Avança para a próxima entrada
-                continue;
-            }
 
-            std::string entryName(entry->name, entry->name_len);
+            if (entry->rec_len == 0) break; // Se a entrada não tiver tamanho, sai do loop
 
-            // Verifica se é a entrada que queremos remover
-            if (entryName == name) {
+            // Verifica se a entrada atual é a que queremos remover e se é válida
+            if (entry->inode != 0 && std::string(entry->name, entry->name_len) == name) {
+                
                 if (prev_entry != nullptr) {
-                    // Se não for a primeira entrada, ajusta o tamanho da entrada anterior
-                    prev_entry->rec_len += entry->rec_len; // Une com a entrada anterior
+                    // Se não for a primeira entrada, a entrada anterior absorve o espaço da entrada atual
+                    prev_entry->rec_len += entry->rec_len;
                 } else {
-                    // Se for a primeira entrada, apenas zera o inode
-                    entry->rec_len = blockSize - offset; // Ajusta o tamanho da entrada para ocupar o resto do bloco
+                    // Se for a primeira entrada, marca o inode como 0 (entrada "vazia")
+                    entry->inode = 0;
                 }
-
-                writeBlock(currentInode.i_block[i], blockData.data()); // Escreve o bloco atualizado no disco
+                
+                writeBlock(currentInode.i_block[i], blockData.data());
                 entryRemoved = true;
-                break;
+                break; 
             }
-            prev_entry = entry; // Atualiza o ponteiro para a entrada anterior
-            offset += entry->rec_len; // Avança para a próxima entrada
+            
+            if (entry->inode != 0) {
+                prev_entry = entry;
+            }
+            
+            offset += entry->rec_len;
         }
+    }
+
+    if (!entryRemoved) {
+        std::cerr << "Error: Could not find and remove directory entry for '" << name << "'." << std::endl;
+        return;
     }
 
     // Decrementa o contador de links do arquivo removido
-    readInode(getInodeByName(name), &targetInode);
     targetInode.i_links_count--;
+    writeInode(targetInodeNum, &targetInode); // Atualiza o inode do arquivo removido
 
-    writeInode(getInodeByName(name), &targetInode); // Escreve o inode atualizado no disco
-
-    // Libera os recursos do arquivo removido se for necessário
     if (targetInode.i_links_count == 0) {
-        std::cout << "Removing file '" << name << "' and freeing its resources." << std::endl;
-        for (int i = 0; i < 12; i++) {
-            if (targetInode.i_block[i] != 0) {
-                freeBlock(targetInode.i_block[i]); // Libera o bloco do arquivo
+        // Libera os 12 blocos de dados diretos
+        for (int j = 0; j < 12; j++) {
+            if (targetInode.i_block[j] != 0) {
+                freeBlock(targetInode.i_block[j]);
             }
         }
-        freeInode(getInodeByName(name)); // Libera o inode do arquivo
+
+        // Libera blocos do ponteiro indireto simples (i_block[12])
+        if (targetInode.i_block[12] != 0) {
+            std::vector<unsigned int> indirectBlock(blockSize / sizeof(unsigned int));
+            readBlock(targetInode.i_block[12], indirectBlock.data());
+            // Libera os dados
+            for (unsigned int dataBlockNum : indirectBlock) {
+                if (dataBlockNum != 0) freeBlock(dataBlockNum);
+            }
+            // Libera o próprio bloco de ponteiros
+            freeBlock(targetInode.i_block[12]);
+        }
+
+        // Libera blocos do ponteiro indireto duplo (i_block[13])
+        if (targetInode.i_block[13] != 0) {
+            std::vector<unsigned int> doublyIndirectBlock(blockSize / sizeof(unsigned int));
+            readBlock(targetInode.i_block[13], doublyIndirectBlock.data());
+            // Percorre os ponteiros do bloco indireto duplo
+            for (unsigned int singlyIndirectBlockNum : doublyIndirectBlock) {
+                if (singlyIndirectBlockNum == 0) continue;
+                std::vector<unsigned int> singlyIndirectBlock(blockSize / sizeof(unsigned int));
+                readBlock(singlyIndirectBlockNum, singlyIndirectBlock.data());
+                // Libera cada bloco de dados que ele aponta
+                for (unsigned int dataBlockNum : singlyIndirectBlock) {
+                    if (dataBlockNum != 0) freeBlock(dataBlockNum);
+                }
+                // Libera o próprio bloco de indireção simples.
+                freeBlock(singlyIndirectBlockNum);
+            }
+            // Libera o bloco de indireção dupla.
+            freeBlock(targetInode.i_block[13]);
+        }
+
+        // Libera o inode, agora que ele está vazio.
+        freeInode(targetInodeNum);
     }
 
-    if (entryRemoved) {
-        std::cout << "File '" << name << "' removed successfully." << std::endl;
-    } else {
-        std::cerr << "Error: File '" << name << "' not found in current directory." << std::endl;
-    }
+    std::cout << "File '" << name << "' removed successfully." << std::endl;
 }
 
+// Remove um diretório vazio
 void Ext2Shell::cmd_rmdir(const std::string& name) {
     // Verifica se existe um arquivo ou diretório com o nome
     unsigned int targetInodeNum = getInodeByName(name);
@@ -954,16 +1008,18 @@ void Ext2Shell::cmd_rmdir(const std::string& name) {
         freeBlock(targetInode.i_block[0]); // Libera o bloco do diretório
     }
 
-    freeInode(targetInodeNum); // Libera o inode do diretório
-
-    if (entryRemoved) {
-        std::cout << "Directory '" << name << "' removed successfully." << std::endl;
-    } else {
-        std::cerr << "Error: Directory '" << name << "' not found in current directory." << std::endl;
+    // Libera os recursos do diretório removido
+    if (targetInode.i_block[0] != 0) {
+        freeBlock(targetInode.i_block[0]);
     }
+
+    // Libera o inode
+    freeInode(targetInodeNum);
+
+    std::cout << "Directory '" << name << "' removed successfully." << std::endl;
 }
 
-// Exemplo: cp file.txt /home/user/file_copy.txt (não utilizar aspas nem espaços no caminho do arquivo)
+// Copia um arquivo do sistema de arquivos para o sistema local
 void Ext2Shell::cmd_cp(const std::string& source, const std::string& dest) {
     // Verifica se o arquivo de origem existe
     unsigned int sourceInodeNum = getInodeByName(source);
@@ -1014,7 +1070,6 @@ void Ext2Shell::cmd_cp(const std::string& source, const std::string& dest) {
     // Processa os blocos indiretos, se necessário (i_block[12] e i_block[13])
     if (bytesCopied < fileSize && sourceInode.i_block[12] != 0) {
         // Lê o bloco indireto
-        // O bloco indireto contém ponteiros para blocos de dados
         std::vector<unsigned int> indirectBlockpointers(blockSize / sizeof(unsigned int));
         readBlock(sourceInode.i_block[12], (char*)indirectBlockpointers.data());
 
@@ -1063,6 +1118,7 @@ void Ext2Shell::cmd_cp(const std::string& source, const std::string& dest) {
     std::cout << "File '" << source << "' copied to '" << dest << "' successfully." << std::endl;
 }
 
+// Renomeia um arquivo ou diretório
 void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newName) {
     // Valida comprimento
     if (newName.length() >= EXT2_NAME_LEN) {
@@ -1082,7 +1138,7 @@ void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newNam
         return;
     }
 
-    // 4) Determina o file_type (arquivo ou diretório)
+    // Determina o file_type (arquivo ou diretório)
     ext2_inode targetInode;
     readInode(oldIno, &targetInode);
     unsigned char fileType = S_ISDIR(targetInode.i_mode) ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
