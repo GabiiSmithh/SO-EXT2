@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <fstream>
 #include <algorithm>
+#include <ctime> // Add this include for time formatting
 
 // Construtor: Abre a imagem e inicializa o estado
 Ext2Shell::Ext2Shell(const std::string& imagePath) : fd(open(imagePath.c_str(), O_RDWR)), imagePath(imagePath) {
