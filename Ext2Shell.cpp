@@ -509,6 +509,57 @@ void Ext2Shell::freeBlock(unsigned int blockNum) {
     writeGroupDesc(currentGroupNum, &currentGroupDesc);
 }
 
+std::string formatPermissions(unsigned short mode) {
+    std::string p;
+    // Determine file type
+    if (S_ISDIR(mode)) p += 'd';
+    else if (S_ISREG(mode)) p += 'f';
+    else if (S_ISLNK(mode)) p += 'l';
+    else p += '?';
+
+    // User permissions
+    p += (mode & S_IRUSR) ? 'r' : '-';
+    p += (mode & S_IWUSR) ? 'w' : '-';
+    p += (mode & S_IXUSR) ? 'x' : '-';
+    // Group permissions
+    p += (mode & S_IRGRP) ? 'r' : '-';
+    p += (mode & S_IWGRP) ? 'w' : '-';
+    p += (mode & S_IXGRP) ? 'x' : '-';
+    // Other permissions
+    p += (mode & S_IROTH) ? 'r' : '-';
+    p += (mode & S_IWOTH) ? 'w' : '-';
+    p += (mode & S_IXOTH) ? 'x' : '-';
+    
+    return p;
+}
+
+std::string formatSize(unsigned int size) {
+    std::stringstream ss;
+    double s = static_cast<double>(size);
+    ss << std::fixed << std::setprecision(1);
+
+    if (s < 1024) {
+        ss << std::setprecision(0) << s << " B";
+    } else if (s < 1024 * 1024) {
+        ss << (s / 1024.0) << " KiB";
+    } else if (s < 1024 * 1024 * 1024) {
+        ss << (s / (1024.0 * 1024.0)) << " MiB";
+    } else {
+        ss << (s / (1024.0 * 1024.0 * 1024.0)) << " GiB";
+    }
+    return ss.str();
+}
+
+
+std::string formatTime(uint32_t timestamp) {
+    time_t raw_time = timestamp;
+    struct tm* timeinfo = localtime(&raw_time);
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), "%d/%m/%Y %H:%M", timeinfo);
+    return std::string(buffer);
+}
+
+
 // Lista os arquivos e diretórios no diretório atual
 void Ext2Shell::cmd_ls() {
     forEachDirEntry(currentInodeNum, [](ext2_dir_entry_2* entry) {
@@ -563,14 +614,47 @@ void Ext2Shell::cmd_cd(const std::string& path) {
 
 // Exibe o caminho atual
 void Ext2Shell::cmd_pwd() {
-    std::cout << getPrompt() << std::endl;
+    // Inicia a string do caminho sempre com a barra da raiz.
+    std::string pathStr = "/";
+
+    // Percorre o vetor que armazena as partes do caminho (ex: "banana", "subpasta").
+    for (const auto& part : currentPath) {
+        // Adiciona cada parte do caminho seguida por uma barra.
+        pathStr += part + "/";
+    }
+
+    // Imprime a string do caminho final.
+    std::cout << pathStr << std::endl;
 }
 
 // --- Implementações dos Comandos de Manipulação de Arquivos e Diretórios ---
 
 // Exibe os atributos de um arquivo ou diretório
 void Ext2Shell::cmd_attr(const std::string& name) {
-    std::cout << "cmd_attr ainda não implementado." << std::endl;
+    // 1. Find the inode by name in the current directory
+    unsigned int inodeNum = getInodeByName(name);
+    if (inodeNum == 0) {
+        std::cerr << "Error: File or directory '" << name << "' not found." << std::endl;
+        return;
+    }
+
+    // 2. Read the inode data from the disk
+    ext2_inode targetInode;
+    readInode(inodeNum, &targetInode);
+
+    // 3. Format the extracted information using helper functions
+    std::string perms_str = formatPermissions(targetInode.i_mode);
+    std::string size_str = formatSize(targetInode.i_size);
+    std::string mtime_str = formatTime(targetInode.i_mtime);
+
+    // 4. Print the header and the formatted attributes
+    std::cout << " permissões  uid  gid      tamanho      modificado em" << std::endl;
+    std::cout << std::left 
+              << std::setw(12) << perms_str
+              << std::setw(5) << targetInode.i_uid
+              << std::setw(5) << targetInode.i_gid
+              << std::setw(15) << size_str
+              << mtime_str << std::endl;
 }
 
 // Exibe o conteúdo de um arquivo
