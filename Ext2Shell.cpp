@@ -175,6 +175,56 @@ std::vector<std::string> Ext2Shell::tokenize(const std::string& input) {
     return tokens;
 }
 
+std::string formatPermissions(unsigned short mode) {
+    std::string p;
+    // Determine file type
+    if (S_ISDIR(mode)) p += 'd';
+    else if (S_ISREG(mode)) p += 'f';
+    else if (S_ISLNK(mode)) p += 'l';
+    else p += '?';
+
+    // User permissions
+    p += (mode & S_IRUSR) ? 'r' : '-';
+    p += (mode & S_IWUSR) ? 'w' : '-';
+    p += (mode & S_IXUSR) ? 'x' : '-';
+    // Group permissions
+    p += (mode & S_IRGRP) ? 'r' : '-';
+    p += (mode & S_IWGRP) ? 'w' : '-';
+    p += (mode & S_IXGRP) ? 'x' : '-';
+    // Other permissions
+    p += (mode & S_IROTH) ? 'r' : '-';
+    p += (mode & S_IWOTH) ? 'w' : '-';
+    p += (mode & S_IXOTH) ? 'x' : '-';
+    
+    return p;
+}
+
+std::string formatSize(unsigned int size) {
+    std::stringstream ss;
+    double s = static_cast<double>(size);
+    ss << std::fixed << std::setprecision(1);
+
+    if (s < 1024) {
+        ss << std::setprecision(0) << s << " B";
+    } else if (s < 1024 * 1024) {
+        ss << (s / 1024.0) << " KiB";
+    } else if (s < 1024 * 1024 * 1024) {
+        ss << (s / (1024.0 * 1024.0)) << " MiB";
+    } else {
+        ss << (s / (1024.0 * 1024.0 * 1024.0)) << " GiB";
+    }
+    return ss.str();
+}
+
+
+std::string formatTime(uint32_t timestamp) {
+    time_t raw_time = timestamp;
+    struct tm* timeinfo = localtime(&raw_time);
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), "%d/%m/%Y %H:%M", timeinfo);
+    return std::string(buffer);
+}
+
 // Processa um comando lido do usuário
 void Ext2Shell::processCommand(const std::string& line) {
     std::vector<std::string> tokens = tokenize(line);
@@ -508,55 +558,6 @@ void Ext2Shell::freeBlock(unsigned int blockNum) {
 
     // Atualiza o grupo no disco
     writeGroupDesc(currentGroupNum, &currentGroupDesc);
-}
-std::string formatPermissions(unsigned short mode) {
-    std::string p;
-    // Determine file type
-    if (S_ISDIR(mode)) p += 'd';
-    else if (S_ISREG(mode)) p += 'f';
-    else if (S_ISLNK(mode)) p += 'l';
-    else p += '?';
-
-    // User permissions
-    p += (mode & S_IRUSR) ? 'r' : '-';
-    p += (mode & S_IWUSR) ? 'w' : '-';
-    p += (mode & S_IXUSR) ? 'x' : '-';
-    // Group permissions
-    p += (mode & S_IRGRP) ? 'r' : '-';
-    p += (mode & S_IWGRP) ? 'w' : '-';
-    p += (mode & S_IXGRP) ? 'x' : '-';
-    // Other permissions
-    p += (mode & S_IROTH) ? 'r' : '-';
-    p += (mode & S_IWOTH) ? 'w' : '-';
-    p += (mode & S_IXOTH) ? 'x' : '-';
-    
-    return p;
-}
-
-std::string formatSize(unsigned int size) {
-    std::stringstream ss;
-    double s = static_cast<double>(size);
-    ss << std::fixed << std::setprecision(1);
-
-    if (s < 1024) {
-        ss << std::setprecision(0) << s << " B";
-    } else if (s < 1024 * 1024) {
-        ss << (s / 1024.0) << " KiB";
-    } else if (s < 1024 * 1024 * 1024) {
-        ss << (s / (1024.0 * 1024.0)) << " MiB";
-    } else {
-        ss << (s / (1024.0 * 1024.0 * 1024.0)) << " GiB";
-    }
-    return ss.str();
-}
-
-
-std::string formatTime(uint32_t timestamp) {
-    time_t raw_time = timestamp;
-    struct tm* timeinfo = localtime(&raw_time);
-    char buffer[80];
-    strftime(buffer, sizeof(buffer), "%d/%m/%Y %H:%M", timeinfo);
-    return std::string(buffer);
 }
 
 // Lista os arquivos e diretórios no diretório atual
