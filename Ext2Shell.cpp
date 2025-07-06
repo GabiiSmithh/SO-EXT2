@@ -591,9 +591,18 @@ void Ext2Shell::cmd_cd(const std::string& path) {
 
 // Exibe o caminho atual
 void Ext2Shell::cmd_pwd() {
-    std::cout << getPrompt() << std::endl;
-}
+    // Inicia a string do caminho sempre com a barra da raiz.
+    std::string pathStr = "/";
 
+    // Percorre o vetor que armazena as partes do caminho (ex: "banana", "subpasta").
+    for (const auto& part : currentPath) {
+        // Adiciona cada parte do caminho seguida por uma barra.
+        pathStr += part + "/";
+    }
+
+    // Imprime a string do caminho final.
+    std::cout << pathStr << std::endl;
+}
 // --- Implementações dos Comandos de Manipulação de Arquivos e Diretórios ---
 
 // Exibe os atributos de um arquivo ou diretório
