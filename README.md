@@ -71,31 +71,60 @@ Se você não tiver uma imagem `.img`, pode criar uma facilmente no Linux:
     mkfs.ext2 -F myext2image.img
     ```
 
-3.  **(Opcional, mas recomendado)** Adicione alguns arquivos e diretórios à imagem para que você tenha com o que interagir. A ferramenta `debugfs` é perfeita para isso:
+## Criação e geração da imagem de volume ext2
 
-    ```bash
-    debugfs -w myext2image.img
-    ```
+Gerando imagens ext2 (64MiB com blocos de 1K):
+```console
+# dd if=/dev/zero of=./myext2image.img bs=1024 count=64K
+# mkfs.ext2 -b 1024 ./myext2image.img
+```
 
-    Dentro do `debugfs`, execute os seguintes comandos:
+Verificando a integridade de um sistema ext2:
+```console
+# e2fsck myext2image.img
+```
 
-    ```
-    # Criar alguns diretórios
-    mkdir /home
-    mkdir /etc
+Montando a imagem do volume com ext2:
+```console
+# sudo mount myext2image.img /mnt
+```
 
-    # Escrever um arquivo de texto dentro de /home
-    # (Este comando pega o arquivo /etc/hostname do seu sistema e o copia para dentro da imagem)
-    write /etc/hostname /home/hostname.txt
+Estrutura original de arquivos do volume (comando `tree` via bash):
+```
+/
+├── [1.0K]  documentos
+│   ├── [1.0K]  emptydir
+│   ├── [9.2K]  alfabeto.txt
+│   └── [   0]  vazio.txt
+├── [1.0K]  imagens
+│   ├── [8.1M]  one_piece.jpg
+│   ├── [391K]  saber.jpg
+│   └── [ 11M]  toscana_puzzle.jpg
+├── [1.0K]  livros
+│   ├── [1.0K]  classicos
+│   │   ├── [506K]  A Journey to the Centre of the Earth - Jules Verne.txt
+│   │   ├── [409K]  Dom Casmurro - Machado de Assis.txt
+│   │   ├── [861K]  Dracula-Bram_Stoker.txt
+│   │   ├── [455K]  Frankenstein-Mary_Shelley.txt
+│   │   └── [232K]  The Worderful Wizard of Oz - L. Frank Baum.txt
+│   └── [1.0K]  religiosos
+│       └── [3.9M]  Biblia.txt
+├── [ 12K]  lost+found
+└── [  29]  hello.txt
 
-    # Listar o conteúdo para verificar
-    ls -l /home
+```
 
-    # Sair do debugfs
-    quit
-    ```
+Informações de espaço  (comando `df` via bash):
+```
+Blocos de 1k: 62186
+Usado: 26777 KiB
+Disponível: 32133 KiB
+```
 
-    Agora sua imagem `myext2image.img` está pronta para ser usada com o `next2shell` e já contém um diretório e um arquivo.
+Desmontando a imagem do volume com ext2:
+```console
+# sudo umount /mnt
+```
 
 ## 📋 Comandos Disponíveis
 
