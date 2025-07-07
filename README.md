@@ -158,4 +158,4 @@ Desmontando a imagem do volume com ext2:
 
 ## 📄 Licença
 
-Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes (você pode criar um se desejar).
+Este projeto está sob a licença MIT.
