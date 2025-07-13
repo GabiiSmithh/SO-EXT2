@@ -565,7 +565,7 @@ void Ext2Shell::cmd_ls() {
         std::string name(entry->name, entry->name_len);
         std::cout << name << std::endl;
         std::cout << "inode: " << entry->inode << std::endl;
-        std::cout << "record lenght: " << entry->rec_len << std::endl;
+        std::cout << "record length: " << entry->rec_len << std::endl;
         std::cout << "name lenght: " << static_cast<int>(entry->name_len) << std::endl;
         std::cout << "file type: " << static_cast<int>(entry->file_type) << std::endl;
         std::cout << std::endl;
@@ -1265,7 +1265,7 @@ void Ext2Shell::cmd_cp(const std::string& source, const std::string& dest) {
 
 // Renomeia um arquivo ou diretório
 void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newName) {
-    // --- PASSO 1: VALIDAÇÕES INICIAIS ---
+    // Validações iniciais
     if (newName.length() >= EXT2_NAME_LEN) {
         std::cerr << "Error: New name is too long." << std::endl;
         return;
@@ -1280,7 +1280,7 @@ void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newNam
         return;
     }
 
-    // --- PASSO 2: ENCONTRAR A ENTRADA E DECIDIR A ESTRATÉGIA ---
+    // Lê o inode do arquivo ou diretório atual
     bool operationCompleted = false;
     for (int i = 0; i < 12 && !operationCompleted; i++) {
         if (currentInode.i_block[i] == 0) continue;
@@ -1302,23 +1302,20 @@ void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newNam
         }
 
         if (entry_to_rename) {
-            // Calcula o espaço mínimo que a nova entrada precisa (alinhado a 4 bytes).
+            // Calcula o espaço mínimo que a nova entrada precisa
             unsigned int neededLen = (8 + newName.length() + 3) & ~3;
 
-            // --- A CONDICIONAL QUE VOCÊ PEDIU ---
-            // Se o nome novo cabe no espaço que a entrada antiga já ocupa...
+            // Se o novo nome cabe na entrada atual, renomeia diretamente
             if (neededLen <= entry_to_rename->rec_len) {
-                // ...apenas editamos a entrada no lugar. Esta é a otimização.
                 entry_to_rename->name_len = newName.length();
                 memset(entry_to_rename->name, 0, oldName.length()); // Limpa o nome antigo
                 strncpy(entry_to_rename->name, newName.c_str(), entry_to_rename->name_len);
                 
-                // Salva a alteração simples e termina.
+                // Salva a alteração e termina
                 writeBlock(currentInode.i_block[i], blockData.data());
 
             } else {
-                // Se o nome novo NÃO cabe, partimos para a lógica de remover e adicionar.
-                // 1. Removemos a entrada antiga do bloco de dados.
+                // Se o novo nome não cabe, remove a entrada antiga e adiciona uma nova entrada com o novo nome
                 ext2_dir_entry_2* prev = nullptr;
                 unsigned int internal_offset = 0;
                 while (internal_offset < blockSize) {
@@ -1333,10 +1330,10 @@ void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newNam
                     internal_offset += e->rec_len;
                 }
                 
-                // Escrevemos o bloco com a entrada já removida no disco.
+                // Escreve o bloco com a entrada já removida no disco
                 writeBlock(currentInode.i_block[i], blockData.data());
 
-                // 2. Adicionamos a nova entrada (que irá para o final).
+                // Adiciona uma nova entrada com o novo nome
                 ext2_inode targetInode;
                 readInode(inodeNum, &targetInode);
                 unsigned char fileType = S_ISDIR(targetInode.i_mode) ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
