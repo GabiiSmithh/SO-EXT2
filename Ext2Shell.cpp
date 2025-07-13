@@ -865,87 +865,86 @@ void Ext2Shell::cmd_mkdir(const std::string& name) {
 
 // Remove um arquivo
 void Ext2Shell::cmd_rm(const std::string& name) {
+    // Encontra o inode do arquivo pelo nome
     unsigned int targetInodeNum = getInodeByName(name);
-    
-    // Verifica se existe um arquivo ou diretório com o nome
     if (targetInodeNum == 0) {
-        std::cerr << "Error: File or directory named '" << name << "' does not exist." << std::endl;
+        std::cerr << "Error: File '" << name << "' not found." << std::endl;
         return;
     }
 
-    // Verifica se é um arquivo ou um diretório
+    // Verifica se é um arquivo regular
     ext2_inode targetInode;
     readInode(targetInodeNum, &targetInode);
-
-    // Se for um diretório, não pode remover com rm
     if (S_ISDIR(targetInode.i_mode)) {
-        std::cerr << "Error: '" << name << "' is a directory. 'rmdir' should be used instead." << std::endl;
+        std::cerr << "Error: '" << name << "' is a directory. Use 'rmdir' instead." << std::endl;
         return;
     }
 
+    // Remove a entrada do diretório pai
     bool entryRemoved = false;
-    // Percorre as entradas do diretório pai (currentInodeNum)
     for (int i = 0; i < 12 && !entryRemoved; i++) {
-        if (currentInode.i_block[i] == 0) continue; // pula blocos vazios
+        if (currentInode.i_block[i] == 0) continue;
 
-        // Lê o bloco do diretório
+        // Lê o bloco de dados do diretório atual
         std::vector<char> blockData(blockSize);
         readBlock(currentInode.i_block[i], blockData.data());
-
-        // Ponteiros para percorrer as entradas do diretório
-        ext2_dir_entry_2* entry_to_delete = nullptr;
-        ext2_dir_entry_2* last_entry = nullptr;
         char* blockStart = blockData.data();
+        
+        // Ponteiros para as entradas do diretório
+        ext2_dir_entry_2* entry_to_delete = nullptr;
+        ext2_dir_entry_2* prev_to_delete = nullptr; // O anterior ao que vamos deletar
+        ext2_dir_entry_2* current_entry = (ext2_dir_entry_2*)blockStart;
         unsigned int offset = 0;
 
-        // Percorre as entradas para encontrar a entrada a ser removida e a última entrada
+        // Varre o bloco para encontrar a entrada a ser deletada e sua anterior
         while (offset < blockSize) {
-            ext2_dir_entry_2* current_entry = (ext2_dir_entry_2*)(blockStart + offset);
             if (current_entry->rec_len == 0) break;
-
-            // Verifica se o inode é válido
-            if (current_entry->inode != 0) {
-                last_entry = current_entry;
-                if (std::string(current_entry->name, current_entry->name_len) == name) {
-                    entry_to_delete = current_entry;
-                }
+            if (current_entry->inode == targetInodeNum && std::string(current_entry->name, current_entry->name_len) == name) {
+                entry_to_delete = current_entry;
+                break;
             }
+            if(current_entry->inode != 0) prev_to_delete = current_entry;
             offset += current_entry->rec_len;
+            current_entry = (ext2_dir_entry_2*)(blockStart + offset);
         }
 
-        // Se encontrou a entrada a ser removida
-        if (entry_to_delete != nullptr) {
-            
-            // CASO DE BORDA: O item a ser removido É a última entrada
-            if (entry_to_delete == last_entry) {
-                // Ajustamos para a penultima entrada
-                ext2_dir_entry_2* prev_to_last = nullptr;
-                offset = 0;
-                while (offset < blockSize) {
-                    ext2_dir_entry_2* current = (ext2_dir_entry_2*)(blockStart + offset);
-                    if (current->rec_len == 0) break;
-                    if (current == last_entry) break; // Paramos quando chegamos na última.
-                    if (current->inode != 0) prev_to_last = current;
-                    offset += current->rec_len;
-                }
+        // Se encontrou a entrada
+        if (entry_to_delete) {
+            // Verifica se a entrada a deletar é a última na lista
+            unsigned int deleteOffset = (char*)entry_to_delete - blockStart;
+            bool isLastEntry = (deleteOffset + entry_to_delete->rec_len >= blockSize);
 
-                if (prev_to_last != nullptr) {
-                    prev_to_last->rec_len += last_entry->rec_len;
-                } else {
-                    // Se a última também é a primeira
-                    last_entry->inode = 0;
+            // CASO DE BORDA: Removendo o último item
+            if (isLastEntry) {
+                if (prev_to_delete) {
+                    prev_to_delete->rec_len += entry_to_delete->rec_len;
+                } else { // Só havia um item no diretório
+                    entry_to_delete->inode = 0;
                 }
-
-            } else {
-                // CASO GERAL: Removendo do meio
+            } 
+            // CASO GERAL: Removendo do meio
+            else {
                 char* deletePtr = reinterpret_cast<char*>(entry_to_delete);
-                unsigned int deleteLen = entry_to_delete->rec_len;
+                unsigned short deleteLen = entry_to_delete->rec_len;
                 char* nextPtr = deletePtr + deleteLen;
                 unsigned int moveLen = (blockStart + blockSize) - nextPtr;
 
-                // Move toda a memória depois da entrada deletada
+                // Move as entradas seguintes para preencher o espaço
                 memmove(deletePtr, nextPtr, moveLen);
-                last_entry->rec_len += deleteLen;
+                
+                // Encontra o novo último item e ajusta seu rec_len
+                ext2_dir_entry_2* new_last_entry = nullptr;
+                offset = 0;
+                while (offset < (blockSize - deleteLen)) {
+                    ext2_dir_entry_2* current = (ext2_dir_entry_2*)(blockStart + offset);
+                    if (current->rec_len == 0) break;
+                    new_last_entry = current;
+                    offset += current->rec_len;
+                }
+                if (new_last_entry) {
+                    offset = (char*)new_last_entry - blockStart;
+                    new_last_entry->rec_len = blockSize - offset;
+                }
             }
 
             writeBlock(currentInode.i_block[i], blockData.data());
@@ -953,19 +952,16 @@ void Ext2Shell::cmd_rm(const std::string& name) {
         }
     }
 
-    if (!entryRemoved) {
-        std::cerr << "Error: Could not find and remove directory entry for '" << name << "'." << std::endl;
-        return;
-    }
+    if (!entryRemoved) { return; }
 
-    // Decrementa o contador de links do arquivo removido
+    // Libera o inode do arquivo
     targetInode.i_links_count--;
-    writeInode(targetInodeNum, &targetInode); // Atualiza o inode do arquivo removido
-
+    writeInode(targetInodeNum, &targetInode);
     if (targetInode.i_links_count == 0) {
-        // Se o contador de links chegou a zero, podemos liberar o inode e os blocos
+        // Define o tempo de deleção antes de começar a apagar
         targetInode.i_dtime = time(nullptr);
         writeInode(targetInodeNum, &targetInode);
+
         // Libera os 12 blocos de dados diretos
         for (int j = 0; j < 12; j++) {
             if (targetInode.i_block[j] != 0) {
@@ -977,11 +973,13 @@ void Ext2Shell::cmd_rm(const std::string& name) {
         if (targetInode.i_block[12] != 0) {
             std::vector<unsigned int> indirectBlock(blockSize / sizeof(unsigned int));
             readBlock(targetInode.i_block[12], indirectBlock.data());
-            // Libera os dados
+
+            // Libera os blocos apontados pelo bloco de ponteiros indiretos simples
             for (unsigned int dataBlockNum : indirectBlock) {
                 if (dataBlockNum != 0) freeBlock(dataBlockNum);
             }
-            // Libera o próprio bloco de ponteiros
+
+            // Libera o próprio bloco de ponteiros indiretos
             freeBlock(targetInode.i_block[12]);
         }
 
@@ -989,23 +987,26 @@ void Ext2Shell::cmd_rm(const std::string& name) {
         if (targetInode.i_block[13] != 0) {
             std::vector<unsigned int> doublyIndirectBlock(blockSize / sizeof(unsigned int));
             readBlock(targetInode.i_block[13], doublyIndirectBlock.data());
-            // Percorre os ponteiros do bloco indireto duplo
+
+            // Percorre cada bloco de indireção simples apontado pelo bloco de indireção dupla
             for (unsigned int singlyIndirectBlockNum : doublyIndirectBlock) {
                 if (singlyIndirectBlockNum == 0) continue;
+                
                 std::vector<unsigned int> singlyIndirectBlock(blockSize / sizeof(unsigned int));
                 readBlock(singlyIndirectBlockNum, singlyIndirectBlock.data());
-                // Libera cada bloco de dados que ele aponta
+
+                // Libera os blocos apontados pelo bloco de indireção simples
                 for (unsigned int dataBlockNum : singlyIndirectBlock) {
                     if (dataBlockNum != 0) freeBlock(dataBlockNum);
                 }
-                // Libera o próprio bloco de indireção simples.
+
+                // Libera o bloco de indireção simples
                 freeBlock(singlyIndirectBlockNum);
             }
-            // Libera o bloco de indireção dupla.
+
+            // Libera o próprio bloco de ponteiros indiretos duplos
             freeBlock(targetInode.i_block[13]);
         }
-
-        // Libera o inode, agora que ele está vazio.
         freeInode(targetInodeNum);
     }
 
@@ -1014,74 +1015,62 @@ void Ext2Shell::cmd_rm(const std::string& name) {
 
 // Remove um diretório vazio
 void Ext2Shell::cmd_rmdir(const std::string& name) {
-    // Verifica se existe um arquivo ou diretório com o nome
+    // Encontra o inode do diretório pelo nome
     unsigned int targetInodeNum = getInodeByName(name);
     if (targetInodeNum == 0) {
-        std::cerr << "Error: File or directory named '" << name << "' does not exist." << std::endl;
+        std::cerr << "Error: Directory '" << name << "' not found." << std::endl;
         return;
     }
 
-    // Verifica se é um arquivo ou um diretório
+    // Verifica se é um diretório e se está vazio
     ext2_inode targetInode;
-    readInode(getInodeByName(name), &targetInode);
+    readInode(targetInodeNum, &targetInode);
 
-    // Se não for um diretório, não pode remover
     if (!S_ISDIR(targetInode.i_mode)) {
         std::cerr << "Error: '" << name << "' is not a directory." << std::endl;
         return;
     }
 
-    // Verifica se o diretório não tem nenhum subdiretório
     if (targetInode.i_links_count > 2) {
-        std::cerr << "Error: Directory '" << name << "' is not empty." << std::endl;
+        std::cerr << "Error: Directory '" << name << "' is not empty (contains subdirectories)." << std::endl;
         return;
     }
 
-    bool isTrulyEmpty = true; // Assume que o diretório está vazio
-    // Varredura do bloco de dados do diretório alvo
+    // Verifica se está vazio (verificação mais rigorosa)
+    bool isTrulyEmpty = true;
     if (targetInode.i_block[0] != 0) {
-        std::vector<char> blockData(blockSize);
-        readBlock(targetInode.i_block[0], blockData.data());
-        unsigned int offset = 0;
-        while (offset < blockSize) {    
-            ext2_dir_entry_2* entry = (ext2_dir_entry_2*)&blockData[offset];
-            if (entry->rec_len == 0) break; // Se a entrada não tiver tamanho, sai do loop
-
-            // Verifica se o inode é valido
-            if (entry->inode != 0) {
-                std::string entryName(entry->name, entry->name_len);
-                // Se encontrar uma entrada diferente de '.' e '..', o diretório não está vazio
-                if (entryName != "." && entryName != "..") {
-                    isTrulyEmpty = false;
-                    break; // Sai do loop, pois já sabemos que não está vazio
-                }
+        std::vector<char> dirBlockData(blockSize);
+        readBlock(targetInode.i_block[0], &dirBlockData[0]);
+        unsigned int temp_offset = 0;
+        while (temp_offset < blockSize) {
+            ext2_dir_entry_2* e = (ext2_dir_entry_2*)&dirBlockData[temp_offset];
+            if (e->rec_len == 0) break;
+            if (e->inode != 0 && std::string(e->name, e->name_len) != "." && std::string(e->name, e->name_len) != "..") {
+                isTrulyEmpty = false;
+                break;
             }
-            offset += entry->rec_len; // Avança para a próxima entrada
+            temp_offset += e->rec_len;
         }
     }
-
     if (!isTrulyEmpty) {
-        std::cerr << "Error: Directory '" << name << "' is not empty." << std::endl;
+        std::cerr << "Error: Directory '" << name << "' is not empty (contains files)." << std::endl;
         return;
     }
 
     // Remove a entrada do diretório pai
     bool entryRemoved = false;
-    // Percorre as entradas do diretório pai (currentInodeNum)
     for (int i = 0; i < 12 && !entryRemoved; i++) {
-        if (currentInode.i_block[i] == 0) continue; // pula blocos vazios
+        if (currentInode.i_block[i] == 0) continue;
 
-        // Lê o bloco do diretório
-        std::vector<char> blockData(blockSize);
-        readBlock(currentInode.i_block[i], blockData.data());
-
-        // Ponteiros para percorrer as entradas do diretório
-        char* blockStart = blockData.data();
+        std::vector<char> parentBlockData(blockSize);
+        readBlock(currentInode.i_block[i], &parentBlockData[0]);
+        char* blockStart = &parentBlockData[0];
+        
         ext2_dir_entry_2* entry_to_delete = nullptr;
         ext2_dir_entry_2* last_entry = nullptr;
         unsigned int offset = 0;
 
-        // Percorre as entradas para encontrar a entrada a ser removida e a última entrada
+        // Varre o bloco para encontrar a entrada a ser deletada e sua anterior
         while (offset < blockSize) {
             ext2_dir_entry_2* current_entry = (ext2_dir_entry_2*)(blockStart + offset);
             if (current_entry->rec_len == 0) break;
@@ -1091,13 +1080,17 @@ void Ext2Shell::cmd_rmdir(const std::string& name) {
                     entry_to_delete = current_entry;
                 }
             }
-            offset += current_entry->rec_len; // Avança para a próxima entrada
+            offset += current_entry->rec_len;
         }
 
-        // Se encontrou a entrada a ser removida
-        if (entry_to_delete != nullptr) {
-            // CASO DE BORDA: O item a ser removido É a última entrada
-            if (entry_to_delete == last_entry) {
+        // Se encontrou a entrada
+        if (entry_to_delete) {
+            // Verifica se a entrada a deletar é a última na lista
+            unsigned int deleteOffset = (char*)entry_to_delete - blockStart;
+            bool isLastEntry = (deleteOffset + entry_to_delete->rec_len >= blockSize);
+
+            // CASO DE BORDA: Removendo o último item
+            if (isLastEntry) {
                 ext2_dir_entry_2* prev_to_last = nullptr;
                 offset = 0;
                 while(offset < blockSize){
@@ -1107,50 +1100,65 @@ void Ext2Shell::cmd_rmdir(const std::string& name) {
                     if(current->inode != 0) prev_to_last = current;
                     offset += current->rec_len;
                 }
-                if(prev_to_last != nullptr) {
+                if(prev_to_last) {
                      prev_to_last->rec_len += last_entry->rec_len;
-                } else {
+                } else { // Só havia um item no diretório
                      last_entry->inode = 0;
                 }
-            } else {
-                // CASO GERAL: Removendo do meio
+            } 
+            // CASO GERAL: Removendo do meio
+            else {
                 char* deletePtr = reinterpret_cast<char*>(entry_to_delete);
-                unsigned int deleteLen = entry_to_delete->rec_len;
+                unsigned short deleteLen = entry_to_delete->rec_len;
                 char* nextPtr = deletePtr + deleteLen;
                 unsigned int moveLen = (blockStart + blockSize) - nextPtr;
+
+                // Move as entradas seguintes para preencher o espaço
                 memmove(deletePtr, nextPtr, moveLen);
-                last_entry->rec_len += deleteLen;
+                
+                // Encontra o novo último item e ajusta seu rec_len
+                ext2_dir_entry_2* new_last_entry = nullptr;
+                offset = 0;
+                while (offset < (blockSize - deleteLen)) {
+                    ext2_dir_entry_2* current = (ext2_dir_entry_2*)(blockStart + offset);
+                    if (current->rec_len == 0) break;
+                    new_last_entry = current;
+                    offset += current->rec_len;
+                }
+                if (new_last_entry) {
+                    offset = (char*)new_last_entry - blockStart;
+                    new_last_entry->rec_len = blockSize - offset;
+                }
             }
-            writeBlock(currentInode.i_block[i], blockData.data());
+            writeBlock(currentInode.i_block[i], parentBlockData.data());
             entryRemoved = true;
         }
     }
 
-    // Se por algum motivo a entrada não foi removida.
     if (!entryRemoved) {
         std::cerr << "Error: Could not remove directory entry for '" << name << "'." << std::endl;
         return;
     }
 
-    // Atualiza o Inode do diretório pai
+    // Atualiza o inode do diretório atual
     currentInode.i_links_count--;
     writeInode(currentInodeNum, &currentInode);
 
-    // Atualiza o contador de links do diretório removido
+    // Atualiza o grupo do diretório atual
     currentGroupDesc.bg_used_dirs_count--;
     writeGroupDesc(currentGroupNum, &currentGroupDesc);
 
-    // Marca o inode do diretório removido como livre
-    targetInode.i_links_count = 0; // Inode não é mais apontado por ninguém
-    targetInode.i_dtime = time(nullptr); // Define o tempo de deleção 
+    // Atualiza o inode do diretório a ser deletado
+    targetInode.i_links_count = 0;
+    targetInode.i_dtime = time(nullptr);
     writeInode(targetInodeNum, &targetInode);
 
-    // Libera os recursos do diretório removido
+    // Libera o bloco de dados do diretório
     if (targetInode.i_block[0] != 0) {
-        freeBlock(targetInode.i_block[0]); // Libera o bloco do diretório
+        freeBlock(targetInode.i_block[0]);
     }
 
-    // Libera o inode
+    // Libera o inode do diretório
     freeInode(targetInodeNum);
 
     std::cout << "Directory '" << name << "' removed successfully." << std::endl;
@@ -1257,42 +1265,93 @@ void Ext2Shell::cmd_cp(const std::string& source, const std::string& dest) {
 
 // Renomeia um arquivo ou diretório
 void Ext2Shell::cmd_rename(const std::string& oldName, const std::string& newName) {
-    // Valida comprimento
+    // --- PASSO 1: VALIDAÇÕES INICIAIS ---
     if (newName.length() >= EXT2_NAME_LEN) {
-        std::cerr << "Error: Name too long (max " << EXT2_NAME_LEN - 1 << " characters)." << std::endl;        return;
+        std::cerr << "Error: New name is too long." << std::endl;
+        return;
     }
-
-    // Verifica se oldName existe
-    unsigned int oldIno = getInodeByName(oldName);
-    if (oldIno == 0) {
+    unsigned int inodeNum = getInodeByName(oldName);
+    if (inodeNum == 0) {
         std::cerr << "Error: '" << oldName << "' not found." << std::endl;
         return;
     }
-
-    // Verifica se newName já existe
     if (getInodeByName(newName) != 0) {
         std::cerr << "Error: '" << newName << "' already exists." << std::endl;
         return;
     }
 
-    // Determina o file_type (arquivo ou diretório)
-    ext2_inode targetInode;
-    readInode(oldIno, &targetInode);
-    unsigned char fileType = S_ISDIR(targetInode.i_mode) ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+    // --- PASSO 2: ENCONTRAR A ENTRADA E DECIDIR A ESTRATÉGIA ---
+    bool operationCompleted = false;
+    for (int i = 0; i < 12 && !operationCompleted; i++) {
+        if (currentInode.i_block[i] == 0) continue;
 
-    // Cria a nova entrada (link)
-    if (addDirectoryEntry(currentInodeNum, oldIno, newName, fileType) < 0) {
-        std::cerr << "Error: Insufficient space to create '" << newName << "'." << std::endl;
-        return;
+        std::vector<char> blockData(blockSize);
+        readBlock(currentInode.i_block[i], blockData.data());
+        
+        unsigned int offset = 0;
+        ext2_dir_entry_2* entry_to_rename = nullptr;
+        // Encontra o ponteiro para a entrada que queremos renomear
+        while (offset < blockSize) {
+            ext2_dir_entry_2* entry = (ext2_dir_entry_2*)&blockData[offset];
+            if (entry->rec_len == 0) break;
+            if (entry->inode == inodeNum && std::string(entry->name, entry->name_len) == oldName) {
+                entry_to_rename = entry;
+                break;
+            }
+            offset += entry->rec_len;
+        }
+
+        if (entry_to_rename) {
+            // Calcula o espaço mínimo que a nova entrada precisa (alinhado a 4 bytes).
+            unsigned int neededLen = (8 + newName.length() + 3) & ~3;
+
+            // --- A CONDICIONAL QUE VOCÊ PEDIU ---
+            // Se o nome novo cabe no espaço que a entrada antiga já ocupa...
+            if (neededLen <= entry_to_rename->rec_len) {
+                // ...apenas editamos a entrada no lugar. Esta é a otimização.
+                entry_to_rename->name_len = newName.length();
+                memset(entry_to_rename->name, 0, oldName.length()); // Limpa o nome antigo
+                strncpy(entry_to_rename->name, newName.c_str(), entry_to_rename->name_len);
+                
+                // Salva a alteração simples e termina.
+                writeBlock(currentInode.i_block[i], blockData.data());
+
+            } else {
+                // Se o nome novo NÃO cabe, partimos para a lógica de remover e adicionar.
+                // 1. Removemos a entrada antiga do bloco de dados.
+                ext2_dir_entry_2* prev = nullptr;
+                unsigned int internal_offset = 0;
+                while (internal_offset < blockSize) {
+                    ext2_dir_entry_2* e = (ext2_dir_entry_2*)&blockData[internal_offset];
+                    if (e->rec_len == 0) break;
+                    if (e == entry_to_rename) {
+                        if (prev) prev->rec_len += e->rec_len;
+                        else e->inode = 0;
+                        break;
+                    }
+                    if (e->inode != 0) prev = e;
+                    internal_offset += e->rec_len;
+                }
+                
+                // Escrevemos o bloco com a entrada já removida no disco.
+                writeBlock(currentInode.i_block[i], blockData.data());
+
+                // 2. Adicionamos a nova entrada (que irá para o final).
+                ext2_inode targetInode;
+                readInode(inodeNum, &targetInode);
+                unsigned char fileType = S_ISDIR(targetInode.i_mode) ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+                if (addDirectoryEntry(currentInodeNum, inodeNum, newName, fileType) < 0) {
+                    std::cerr << "Error: Could not add new entry for '" << newName << "'. Filesystem may be inconsistent." << std::endl;
+                    return;
+                }
+            }
+            operationCompleted = true;
+        }
     }
 
-    // Remove a entrada antiga
-    removeDirectoryEntry(currentInodeNum, oldName);
-
-    // Atualiza o link count no inode (decrementa uma referência)
-    targetInode.i_links_count--;
-    writeInode(oldIno, &targetInode);
-
-    std::cout << "Renamed '" << oldName << "' to '" << newName << "' successfully." << std::endl;
+    if (operationCompleted) {
+        std::cout << "Renamed '" << oldName << "' to '" << newName << "' successfully." << std::endl;
+    } else {
+        std::cerr << "Error: Could not find entry to rename." << std::endl;
+    }
 }
-// VERIFICA SE ELE RENOMEIA NOME MAIOR
