@@ -370,36 +370,50 @@ bool Ext2Shell::isBitSet(unsigned char* bitmap, int bit) {
     return (bitmap[bytePos] & (1 << bitPos)) != 0;
 }
 
-// Procura um inode livre no bitmap do grupo atual e retorna o número do inode ou -1 se não achar
+// Procura um inode livre em todos os grupos
 int Ext2Shell::findFreeInode() {
-    unsigned char bitmap[blockSize];
-    readBlock(currentGroupDesc.bg_inode_bitmap, bitmap); // lê bitmap do inode do grupo atual
-
-    for (unsigned int i = 0; i < super.s_inodes_per_group; i++) {
-        int bytePos = i / 8;           // índice do byte no bitmap
-        int bitPos = i % 8;            // posição do bit dentro do byte
-        if (!(bitmap[bytePos] & (1 << bitPos))) { // se bit não está setado, inode livre
-            // Retorna o número do inode considerando grupo e offset dentro do grupo
-            return i + 1 + currentGroupNum * super.s_inodes_per_group;
+    unsigned int numGroups = (super.s_inodes_count + super.s_inodes_per_group - 1) / super.s_inodes_per_group;
+    // Percorre todos os grupos de inodes
+    for (unsigned int group = 0; group < numGroups; ++group) {
+        ext2_group_desc groupDesc;
+        readGroupDesc(group, &groupDesc);
+        // Se o grupo não tem inodes livres, pula para o próximo
+        if (groupDesc.bg_free_inodes_count > 0) {
+            unsigned char bitmap[blockSize];
+            readBlock(groupDesc.bg_inode_bitmap, bitmap);
+            // Percorre o bitmap do grupo
+            for (unsigned int i = 0; i < super.s_inodes_per_group; ++i) {
+                // Se o bit correspondente ao inode não está marcado, é um inode livre
+                if (!isBitSet(bitmap, i)) {
+                    return group * super.s_inodes_per_group + i + 1;
+                }
+            }
         }
     }
-    return -1; // Nenhum inode livre encontrado
+    return -1; // Nenhum inode livre em nenhum grupo
 }
 
-// Procura um bloco livre no bitmap do grupo atual e retorna o número do bloco ou -1 se não achar
+// Procura um bloco livre em todos os grupos
 int Ext2Shell::findFreeBlock() {
-    unsigned char bitmap[blockSize];
-    readBlock(currentGroupDesc.bg_block_bitmap, bitmap); // lê bitmap dos blocos do grupo atual
-
-    for (unsigned int i = 0; i < super.s_blocks_per_group; i++) {
-        int bytePos = i / 8;           // índice do byte no bitmap
-        int bitPos = i % 8;            // posição do bit dentro do byte
-        if (!(bitmap[bytePos] & (1 << bitPos))) { // se bit não está setado, bloco livre
-            // Retorna o número do bloco considerando grupo e offset dentro do grupo
-            return i + 1 + currentGroupNum * super.s_blocks_per_group;
+    unsigned int numGroups = (super.s_blocks_count + super.s_blocks_per_group - 1) / super.s_blocks_per_group;
+    // Percorre todos os grupos de blocos
+    for (unsigned int group = 0; group < numGroups; ++group) {
+        ext2_group_desc groupDesc;
+        readGroupDesc(group, &groupDesc);
+        // Se o grupo não tem blocos livres, pula para o próximo
+        if (groupDesc.bg_free_blocks_count > 0) {
+            unsigned char bitmap[blockSize];
+            readBlock(groupDesc.bg_block_bitmap, bitmap);
+            // Percorre o bitmap do grupo
+            for (unsigned int i = 0; i < super.s_blocks_per_group; ++i) {
+                // Se o bit correspondente ao bloco não está marcado, é um bloco livre
+                if (!isBitSet(bitmap, i)) {
+                    return group * super.s_blocks_per_group + i + 1;
+                }
+            }
         }
     }
-    return -1; // Nenhum bloco livre encontrado
+    return -1; // Nenhum bloco livre em nenhum grupo
 }
 
 // Aloca um inode: marca bit no bitmap, atualiza contadores, retorna número do inode alocado
@@ -460,52 +474,57 @@ int Ext2Shell::allocateBlock() {
     return blockNum; // retorna número do bloco alocado
 }
 
-// Libera um inode: limpa bit no bitmap e atualiza contadores
+// Libera um inode no grupo correto
 void Ext2Shell::freeInode(unsigned int inodeNum) {
+    if (inodeNum == 0) return;
+    // Calcula em qual grupo este inode realmente está
+    unsigned int group = (inodeNum - 1) / super.s_inodes_per_group;
+    // Lê o descritor do grupo correto
+    ext2_group_desc groupDesc;
+    readGroupDesc(group, &groupDesc);
+    // Lê e modifica o bitmap do grupo correto
     unsigned char bitmap[blockSize];
-    readBlock(currentGroupDesc.bg_inode_bitmap, bitmap); // lê bitmap do grupo
-
-    int bit = (inodeNum - 1) % super.s_inodes_per_group; // bit relativo ao grupo
-    int bytePos = bit / 8;
-    int bitPos = bit % 8;
-
-    bitmap[bytePos] &= ~(1 << bitPos);  // limpa bit (marca inode livre)
-    writeBlock(currentGroupDesc.bg_inode_bitmap, bitmap); // salva bitmap atualizado
-
-    // Atualiza contadores de inodes livres no superbloco e no grupo
+    readBlock(groupDesc.bg_inode_bitmap, bitmap);
+    int bit = (inodeNum - 1) % super.s_inodes_per_group;
+    bitmap[bit / 8] &= ~(1 << (bit % 8)); // Limpa o bit
+    writeBlock(groupDesc.bg_inode_bitmap, bitmap);
+    // Atualiza os contadores do superbloco e do grupo correto
     super.s_free_inodes_count++;
-    currentGroupDesc.bg_free_inodes_count++;
-
-    // Escreve superbloco atualizado no disco (offset fixo)
+    groupDesc.bg_free_inodes_count++;
+    // Se o inode era um diretório, também ajustamos o contador de diretórios
+    ext2_inode inode;
+    readInode(inodeNum, &inode);
+    if(S_ISDIR(inode.i_mode)) {
+        groupDesc.bg_used_dirs_count--;
+    }
+    // Salva os metadados atualizados.
     lseek(fd, BASE_OFFSET, SEEK_SET);
     write(fd, &super, sizeof(super));
-
-    // Atualiza o grupo no disco
-    writeGroupDesc(currentGroupNum, &currentGroupDesc);
+    writeGroupDesc(group, &groupDesc);
 }
 
-// Libera um bloco: limpa bit no bitmap e atualiza contadores
+// Libera um bloco no grupo correto
 void Ext2Shell::freeBlock(unsigned int blockNum) {
+    if (blockNum == 0) return;
+
+    // Calcula em qual grupo este bloco realmente está
+    unsigned int group = (blockNum - 1) / super.s_blocks_per_group; 
+    // Lê o descritor do grupo correto
+    ext2_group_desc groupDesc;
+    readGroupDesc(group, &groupDesc);
+    // Lê e modifica o bitmap do grupo correto.
     unsigned char bitmap[blockSize];
-    readBlock(currentGroupDesc.bg_block_bitmap, bitmap); // lê bitmap do grupo
-
-    int bit = (blockNum - 1) % super.s_blocks_per_group; // bit relativo ao grupo
-    int bytePos = bit / 8;
-    int bitPos = bit % 8;
-
-    bitmap[bytePos] &= ~(1 << bitPos);  // limpa bit (marca bloco livre)
-    writeBlock(currentGroupDesc.bg_block_bitmap, bitmap); // salva bitmap atualizado
-
-    // Atualiza contadores de blocos livres no superbloco e no grupo
+    readBlock(groupDesc.bg_block_bitmap, bitmap);
+    int bit = (blockNum - 1) % super.s_blocks_per_group;
+    bitmap[bit / 8] &= ~(1 << (bit % 8)); // Limpa o bit
+    writeBlock(groupDesc.bg_block_bitmap, bitmap);
+    // Atualiza os contadores do superbloco e do grupo correto.
     super.s_free_blocks_count++;
-    currentGroupDesc.bg_free_blocks_count++;
-
-    // Escreve superbloco atualizado no disco (offset fixo)
+    groupDesc.bg_free_blocks_count++;
+    // Salva os metadados atualizados.
     lseek(fd, BASE_OFFSET, SEEK_SET);
     write(fd, &super, sizeof(super));
-
-    // Atualiza o grupo no disco
-    writeGroupDesc(currentGroupNum, &currentGroupDesc);
+    writeGroupDesc(group, &groupDesc);
 }
 
 std::string formatPermissions(unsigned short mode) {
